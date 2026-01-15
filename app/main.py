@@ -4,12 +4,13 @@ from pydantic import BaseModel
 from datetime import datetime
 import time
 import logging
+import uuid
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 # ==================== CONFIGURATION ====================
 logging.basicConfig(
     level=logging.INFO,
-    format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s", "service": "forex-api", "path": "%(pathname)s", "line": "%(lineno)d"}'
+    format='{"timestamp": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s", "service": "forex-api", "request_id": "%(request_id)s", "path": "%(pathname)s"}'
 )
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,10 @@ class HealthResponse(BaseModel):
 @app.middleware("http")
 async def add_observability(request, call_next):
     start_time = time.time()
+    
+    # Générer un ID unique pour la requête
+    request_id = str(uuid.uuid4())
+    
     REQUEST_COUNT.labels(method=request.method, endpoint=request.url.path, status="pending").inc()
     
     response = await call_next(request)
@@ -81,12 +86,13 @@ async def add_observability(request, call_next):
     # Update request count with actual status
     REQUEST_COUNT.labels(method=request.method, endpoint=request.url.path, status=response.status_code).inc()
     
-    # Add headers for tracing
+    # Add headers for tracing avec UUID unique
     response.headers["X-Process-Time"] = str(process_time)
-    response.headers["X-Request-ID"] = str(hash(request))
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Trace-ID"] = request_id  # Pour compatibilité avec les systèmes de tracing
     
-    # Structured logging
-    logger.info(f"Request completed: {request.method} {request.url.path} - Status: {response.status_code} - Duration: {process_time:.3f}s")
+    # Structured logging avec request_id
+    logger.info(f"Request completed: {request.method} {request.url.path} - Status: {response.status_code} - Duration: {process_time:.3f}s - Request-ID: {request_id}")
     
     return response
 
@@ -143,10 +149,13 @@ async def convert(conversion: ConversionRequest):
 
     # Input validation
     if from_curr not in EXCHANGE_RATES:
+        logger.error(f"Unsupported source currency: {from_curr}")
         raise HTTPException(status_code=400, detail=f"Unsupported source currency: {from_curr}")
     if to_curr not in EXCHANGE_RATES:
+        logger.error(f"Unsupported target currency: {to_curr}")
         raise HTTPException(status_code=400, detail=f"Unsupported target currency: {to_curr}")
     if conversion.amount <= 0:
+        logger.error(f"Invalid amount: {conversion.amount}")
         raise HTTPException(status_code=400, detail="Amount must be greater than 0")
 
     # Perform conversion (via USD as base)
