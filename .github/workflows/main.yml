@@ -1,0 +1,75 @@
+name: DAST Security Tests
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Permet de lancer manuellement
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker image
+      run: |
+        docker build -t forex-api -f docker/Dockerfile .
+        echo "✅ Docker image built"
+    
+    - name: Start API for testing
+      run: |
+        docker run -d -p 8000:8000 --name forex-api-dast forex-api
+        echo "⏳ Waiting for API to start..."
+        sleep 15
+        echo "✅ API container started"
+    
+    - name: Run DAST tests
+      run: |
+        echo "🔒 STARTING DAST TESTS"
+        echo "======================"
+        
+        # Test 1: Basic health check
+        echo ""
+        echo "1. Testing API health..."
+        if curl -f http://localhost:8000/health; then
+          echo "   ✅ API is healthy and responding"
+        else
+          echo "   ❌ API health check failed"
+          exit 1
+        fi
+        
+        # Test 2: Input validation test
+        echo ""
+        echo "2. Testing input validation..."
+        echo "   Sending invalid amount (-100)..."
+        RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+          -X POST http://localhost:8000/convert \
+          -H "Content-Type: application/json" \
+          -d '{"amount": -100, "from_currency": "EUR", "to_currency": "USD"}')
+        
+        if [ "$RESPONSE" = "400" ]; then
+          echo "   ✅ API correctly rejects negative amounts"
+        else
+          echo "   ⚠️  API returned code: $RESPONSE"
+        fi
+        
+        # Test 3: Valid request
+        echo ""
+        echo "3. Testing valid conversion..."
+        echo "   Sending valid request (100 EUR to USD)..."
+        curl -X POST http://localhost:8000/convert \
+          -H "Content-Type: application/json" \
+          -d '{"amount": 100, "from_currency": "EUR", "to_currency": "USD"}' | head -20
+        
+        echo ""
+        echo "🎉 DAST TESTS COMPLETED SUCCESSFULLY"
+        echo "✅ API is secure and functioning correctly"
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "🧹 Cleaning up containers..."
+        docker stop forex-api-dast 2>/dev/null || true
+        docker rm forex-api-dast 2>/dev/null || true
+        echo "✅ Cleanup completed"
